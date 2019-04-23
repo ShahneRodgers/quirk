@@ -1,13 +1,12 @@
 import React from "react";
 import {
-  Text,
   TouchableOpacity,
   ScrollView,
   StatusBar,
   View,
   Image,
 } from "react-native";
-import { getExercises, deleteExercise } from "./store";
+import { getExercises, deleteExercise, restoreExercise } from "./store";
 import { Header, Row, Container, IconButton, Label, Paragraph } from "./ui";
 import theme from "./theme";
 import { CBT_FORM_SCREEN, SETTING_SCREEN } from "./screens";
@@ -32,11 +31,17 @@ const ThoughtItem = ({
   historyButtonLabel,
   onPress,
   onDelete,
+  deleteStyle,
+  buttonStyle,
+  thoughtPrefix = "",
 }: {
   thought: SavedThought;
   historyButtonLabel: HistoryButtonLabelSetting;
   onPress: (thought: SavedThought | boolean) => void;
   onDelete: (thought: SavedThought) => void;
+  deleteStyle?: object;
+  buttonStyle?: object;
+  thoughtPrefix?: string;
 }) => (
   <Row style={{ marginBottom: 18 }}>
     <TouchableOpacity
@@ -61,9 +66,10 @@ const ThoughtItem = ({
           paddingRight: 12,
           paddingTop: 12,
           paddingBottom: 6,
+          ...buttonStyle
         }}
       >
-        {historyButtonLabel === "alternative-thought"
+        {thoughtPrefix} {historyButtonLabel === "alternative-thought"
           ? thought.alternativeThought
           : thought.automaticThought}
       </Paragraph>
@@ -97,6 +103,7 @@ const ThoughtItem = ({
     <IconButton
       style={{
         alignSelf: "flex-start",
+        ...deleteStyle
       }}
       accessibilityLabel={i18n.t("accessibility.delete_thought_button")}
       featherIconName={"trash"}
@@ -169,13 +176,60 @@ const ThoughtItemList = ({
   return <>{items}</>;
 };
 
+interface ArchiveListProps {
+  groups: ThoughtGroup[];
+  historyButtonLabel: HistoryButtonLabelSetting;
+  onItemRestore: (thought: SavedThought) => void;
+  onItemPermanentDelete: (thought: SavedThought) => void;
+}
+
+const ArchiveItemList = ({
+  groups,
+  onItemRestore,
+  onItemPermanentDelete,
+  historyButtonLabel
+}: ArchiveListProps) => {
+  if (!groups || groups.length === 0) {
+    return null;
+  }
+
+  const items = groups.map(group => {
+    const thoughts = group.thoughts.map(thought => (
+      <ThoughtItem
+        key={thought.uuid}
+        thought={thought}
+        onPress={onItemRestore}
+        onDelete={onItemPermanentDelete}
+        historyButtonLabel={historyButtonLabel}
+        deleteStyle={{backgroundColor: theme.red}}
+        buttonStyle={{backgroundColor: theme.green}}
+        thoughtPrefix="Restore"
+      />
+    ));
+
+    const isToday =
+      new Date(group.date).toDateString() === new Date().toDateString();
+
+    return (
+      <View key={group.date} style={{ marginBottom: 18 }}>
+        <Label>{isToday ? "Today" : group.date}</Label>
+        {thoughts}
+      </View>
+    );
+  });
+
+  return <>{items}</>;
+}
+
 interface Props {
   navigation: NavigationScreenProp<NavigationState, NavigationAction>;
 }
 
 interface State {
   groups: ThoughtGroup[];
+  deletedGroups: ThoughtGroup[];
   historyButtonLabel: HistoryButtonLabelSetting;
+  showArchive: boolean;
 }
 
 class CBTListScreen extends React.Component<Props, State> {
@@ -185,7 +239,7 @@ class CBTListScreen extends React.Component<Props, State> {
 
   constructor(props) {
     super(props);
-    this.state = { groups: [], historyButtonLabel: "alternative-thought" };
+    this.state = { groups: [], deletedGroups: [], historyButtonLabel: "alternative-thought", showArchive: false };
 
     this.props.navigation.addListener("willFocus", () => {
       this.loadSettings();
@@ -203,18 +257,22 @@ class CBTListScreen extends React.Component<Props, State> {
       };
     };
 
-    getExercises()
-      .then(data => {
-        const thoughts: SavedThought[] = data
-          .map(([_, value]) => JSON.parse(value))
+    const getThoughtGroup = (storedThoughts: SavedThought[]) => {
+      const thoughts: SavedThought[] = storedThoughts
           .filter(n => n) // Worst case scenario, if bad data gets in we don't show it.
           .map(fixTimestamps);
 
-        const groups: ThoughtGroup[] = groupThoughtsByDay(thoughts).filter(
+        return groupThoughtsByDay(thoughts).filter(
           validThoughtGroup
         );
 
-        this.setState({ groups });
+    }
+
+    getExercises()
+      .then(data => {
+        const groups: ThoughtGroup[] = getThoughtGroup(data.savedThoughts);
+        const deletingGroups: ThoughtGroup[] = getThoughtGroup(data.deletedThoughts);
+        this.setState({ groups: groups, deletedGroups: deletingGroups });
       })
       .catch(console.error);
   };
@@ -246,6 +304,11 @@ class CBTListScreen extends React.Component<Props, State> {
     });
   };
 
+  flipArchiveVisibility = () => {
+    const { showArchive } = this.state
+    this.setState({ showArchive: !showArchive })
+  }
+
   onItemDelete = (thought: SavedThought) => {
     // Ignore the typescript error here, Expo's v31 has a bug
     // Upgrade to 32 when it's released to fix
@@ -254,8 +317,14 @@ class CBTListScreen extends React.Component<Props, State> {
     deleteExercise(thought.uuid).then(() => this.loadExercises());
   };
 
+  onItemRestore = (thought: SavedThought) => {
+    universalHaptic.notification(Haptic.NotificationFeedbackType.Success);
+
+    restoreExercise(thought.uuid).then(() => this.loadExercises());
+  }
+
   render() {
-    const { groups, historyButtonLabel } = this.state;
+    const { groups, deletedGroups, showArchive, historyButtonLabel } = this.state;
 
     return (
       <View style={{ backgroundColor: theme.lightOffwhite }}>
@@ -273,6 +342,12 @@ class CBTListScreen extends React.Component<Props, State> {
               <Header>.quirk</Header>
 
               <View style={{ flexDirection: "row" }}>
+                <IconButton
+                  accessibilityLabel={i18n.t("accessibility.archive_button")}
+                  featherIconName={"archive"}
+                  onPress={this.flipArchiveVisibility}
+                  style={{ marginRight: 18 }}
+                />
                 <IconButton
                   featherIconName={"settings"}
                   onPress={() => this.navigateToSettings()}
@@ -295,6 +370,12 @@ class CBTListScreen extends React.Component<Props, State> {
               onItemDelete={this.onItemDelete}
               historyButtonLabel={historyButtonLabel}
             />
+            {showArchive ? <ArchiveItemList
+              groups={deletedGroups}
+              onItemRestore={this.onItemRestore}
+              historyButtonLabel={historyButtonLabel}
+              onItemPermanentDelete={this.onItemDelete}
+            /> : null}
           </Container>
         </ScrollView>
         <Alerter alerts={alerts} />
